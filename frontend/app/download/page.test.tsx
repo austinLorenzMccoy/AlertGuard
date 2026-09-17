@@ -3,11 +3,12 @@ import { describe, expect, it } from "vitest";
 import DownloadPage from "@/app/download/page";
 
 describe("DownloadPage", () => {
-  it("renders a real link to the Play Store", () => {
+  it("renders a disabled 'coming soon' state instead of a live Play Store link", () => {
     render(<DownloadPage />);
-    expect(screen.getByRole("link", { name: "Download on Google Play" })).toHaveAttribute(
-      "href",
-      "https://play.google.com/store",
-    );
+    // The mobile app has no Play Store listing yet — this must never be a
+    // real, clickable link to a generic (misleading) store homepage.
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    const button = screen.getByRole("button", { name: "Coming soon to Google Play" });
+    expect(button).toBeDisabled();
   });
 });
