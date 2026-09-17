@@ -9,6 +9,10 @@
     "test:watch": "vitest",
     "coverage": "vitest run --coverage"
   },
+  "dependencies": {
+    "@stacks/encryption": "^6.17.0",
+    "@stacks/transactions": "^6.17.0"
+  },
   "devDependencies": {
     "@types/node": "^22.15.18",
     "@vitest/coverage-v8": "^3.1.3",

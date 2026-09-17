@@ -3,11 +3,15 @@
 Supabase-powered backend for AlertGuard: verified drowsy-driving detection,
 fleet dashboards, and reward settlement. Implements
 [`docs/AlertGuard-Backend-PRD.md`](../docs/AlertGuard-Backend-PRD.md) end to
-end (schema, RLS, triggers, Edge Functions), and the off-chain half of the
-flow described in
+end (schema, RLS, triggers, Edge Functions), the off-chain half of the flow
+described in
 [`docs/AlertGuard-Smart-Contract-PRD.md`](../docs/AlertGuard-Smart-Contract-PRD.md)
-Section 6. The Clarity contracts themselves live in `../contracts` and are
-out of scope here — this backend only *calls into* them via `trigger-payout`.
+Section 6, and that PRD's custodial wallet infrastructure (Section 3 "Wallet
+Model", Section 7 "Security Model", Section 10 Phase B items 5-7 — see
+"Custodial wallet infrastructure" below and
+[`WALLET_INTEGRATION.md`](../backend/WALLET_INTEGRATION.md)). The Clarity
+contracts themselves live in `../contracts` and are out of scope here — this
+backend only *calls into* them via `trigger-payout`.
 
 ## Layout
 
@@ -26,6 +30,7 @@ backend/
 ├── vitest.config.ts                 # coverage.thresholds = 100 on supabase/functions/_shared/**
 ├── package.json
 ├── tsconfig.json
+├── WALLET_INTEGRATION.md            # client-side handoff spec for the wallet Edge Functions (no UI built yet)
 └── .env.example
 ```
 
@@ -38,6 +43,7 @@ backend/
 | `20260101000003_functions_and_triggers.sql` | `update_updated_at_column`, `compute_safety_score` triggers (PRD Section 9) |
 | `20260101000004_rls_policies.sql` | RLS enabled on **every** table with user data, all PRD-listed policies, plus the fleet_manager insert/update policies and hardening triggers the PRD implies but doesn't spell out (see the long comment block at the top of the file for the full rationale) |
 | `20260101000005_pg_cron_jobs.sql` | Registers the reward-reconciliation (`*/5 * * * *`) and weekly fleet-reports (`0 0 * * 0`) cron jobs via `pg_cron` + `pg_net`, calling the deployed Edge Functions over HTTP |
+| `20260101000006_wallet_infrastructure.sql` | `wallet_keys` (custodial private keys, envelope-encrypted, service-role-only — no client policies at all), `wallet_events` (append-only audit trail, driver-readable), `wallet_connect_challenges` (one-time connect-external-wallet nonces, service-role-only) — Smart Contract PRD Section 3 / Section 7 / Section 10 Phase B items 5-7 |
 
 ### Edge Functions (PRD Section 10)
 
@@ -50,8 +56,12 @@ backend/
 | `redeem-reward` | Airtime / fuel voucher / insurance discount / token withdrawal | `_shared/redemptions.ts` |
 | `reconcile-rewards` | Cron: re-checks `pending` rewards older than 5 minutes | `_shared/reconciliation.ts` |
 | `generate-fleet-reports` | Cron: weekly `fleet_reports` aggregation | `_shared/fleetReports.ts` |
+| `generate-wallet` | Signup: generates + encrypts a driver's custodial Stacks keypair | `_shared/wallet.ts`, `_shared/wallet-crypto.ts` |
+| `export-wallet-key` | Decrypts and returns a driver's custodial private key (shown once, logged) | `_shared/wallet.ts`, `_shared/wallet-crypto.ts` |
+| `request-wallet-connect-challenge` | Issues a one-time nonce for the "connect external wallet" flow | `_shared/wallet-crypto.ts` |
+| `connect-external-wallet` | Verifies a signed challenge, replaces `profiles.wallet_address`, deletes the old custodial key | `_shared/wallet.ts`, `_shared/wallet-crypto.ts` |
 
-`_shared/auth.ts` is the caller-authorization gate shared by all seven
+`_shared/auth.ts` is the caller-authorization gate shared by all eleven
 (`authorizeCaller` for JWT-validated client calls, `isInternalCall` for the
 shared-secret internal-only calls — see "Auth model" below).
 
@@ -73,10 +83,11 @@ Edge Function secrets (staging/production):
 supabase secrets set --env-file .env
 ```
 
-**Never** put `SUPABASE_SERVICE_ROLE_KEY`, `REWARD_POOL_PRIVATE_KEY`, or
-`INTERNAL_FUNCTION_SECRET` in the mobile app bundle or in any file that gets
-committed — they are Edge Function secrets only, read via `Deno.env.get(...)`
-in each function's `index.ts`. `.env` and `.env.*.local` are gitignored.
+**Never** put `SUPABASE_SERVICE_ROLE_KEY`, `REWARD_POOL_PRIVATE_KEY`,
+`INTERNAL_FUNCTION_SECRET`, or `WALLET_MASTER_ENCRYPTION_KEY` in the mobile
+app bundle or in any file that gets committed — they are Edge Function
+secrets only, read via `Deno.env.get(...)` in each function's `index.ts`.
+`.env` and `.env.*.local` are gitignored.
 
 ## Auth model (PRD Section 13)
 
@@ -84,12 +95,16 @@ in each function's `index.ts`. `.env` and `.env.*.local` are gitignored.
 > internal function-to-function calls which use the service role and are
 > never publicly invokable directly."
 
-- **Client → Edge Function** (`verify-session`, `redeem-reward`): the caller
-  must present a valid Supabase-issued JWT (`Authorization: Bearer <token>`),
-  verified via `supabase.auth.getUser(token)` in the `index.ts` wiring and
-  gated by `authorizeCaller()` in `_shared/auth.ts`. `redeem-reward`
-  additionally checks the JWT's user id matches the `driver_id` in the
-  request body, so a driver can only redeem their own balance.
+- **Client → Edge Function** (`verify-session`, `redeem-reward`, and the four
+  wallet functions below): the caller must present a valid Supabase-issued
+  JWT (`Authorization: Bearer <token>`), verified via
+  `supabase.auth.getUser(token)` in the `index.ts` wiring and gated by
+  `authorizeCaller()` in `_shared/auth.ts`. `redeem-reward` and all four
+  wallet functions additionally check the JWT's user id matches the
+  `driver_id` in the request body, so a driver can only act on their own
+  balance/wallet. `export-wallet-key` goes one step further and disallows
+  the internal-call bypass entirely (see "Custodial wallet infrastructure"
+  below) — key export must always be a direct, driver-initiated request.
 - **Edge Function → Edge Function** (`calculate-reward`, `trigger-payout`,
   `send-alert-notification`, `reconcile-rewards`, `generate-fleet-reports`):
   gated by `isInternalCall()`, which requires an `x-internal-secret` header
@@ -165,9 +180,10 @@ npm test          # vitest run
 npm run coverage  # vitest run --coverage
 ```
 
-**Result: 160 tests, all passing, across 8 spec files** (one per
+**Result: 200 tests, all passing, across 10 spec files** (one per
 `_shared/*.ts` module: `auth`, `verification`, `rewards`, `payout`,
-`notifications`, `redemptions`, `reconciliation`, `fleetReports`).
+`notifications`, `redemptions`, `reconciliation`, `fleetReports`,
+`wallet-crypto`, `wallet`).
 
 **Coverage: 100% lines / 100% branches / 100% functions / 100% statements**
 on every file under `supabase/functions/_shared/` (excluding `types.ts`,
@@ -191,6 +207,8 @@ All files          |     100 |      100 |     100 |     100 |
  redemptions.ts    |     100 |      100 |     100 |     100 |
  rewards.ts        |     100 |      100 |     100 |     100 |
  verification.ts   |     100 |      100 |     100 |     100 |
+ wallet-crypto.ts  |     100 |      100 |     100 |     100 |
+ wallet.ts         |     100 |      100 |     100 |     100 |
 -------------------|---------|----------|---------|---------|
 ```
 
@@ -236,6 +254,27 @@ All files          |     100 |      100 |     100 |     100 |
 - **`auth.test.ts`** (19 tests) — bearer-token extraction, the internal
   shared-secret check, and `authorizeCaller`'s internal/missing/invalid/valid
   branches.
+- **`wallet-crypto.test.ts`** (26 tests) — AES-256-GCM `encryptPrivateKey`/
+  `decryptPrivateKey` round-trip, random-IV non-determinism, master-key
+  length guards, malformed-payload/tampered-ciphertext/tampered-authTag/
+  wrong-key decrypt failures (proving this is authenticated encryption, not
+  obfuscation); `parseMasterKey`'s hex/base64/invalid branches;
+  `generateStacksKeypair`'s injected-source determinism, mainnet/testnet
+  network selection, wrong-byte-length guard, and real production source;
+  `generateChallenge`'s nonce/expiry shape, per-driver domain separation, and
+  real production randomness; and `verifyWalletOwnership` tested against
+  **real** `@stacks/transactions`/`@stacks/encryption` keypairs and
+  signatures — a real signature verifies, a tampered nonce fails, a
+  signature from a different keypair fails, and malformed/invalid-recovery-
+  bit signatures fail without throwing.
+- **`wallet.test.ts`** (14 tests) — `generateAndStoreWallet`'s success path
+  and its double-generation guard (throws, writes nothing); `exportWalletKey`'s
+  success path plus `wallet_not_found`/`not_custodial` branches;
+  `connectExternalWallet`'s success path (with and without deleting an
+  existing custodial key, and the no-op-delete case for re-linking a
+  different external wallet) plus every documented failure branch
+  (`challenge_not_found`, `challenge_already_consumed`, `challenge_expired`,
+  `invalid_signature`), and the default-to-the-real-verifier wiring.
 
 ### Coverage: what's included, what's excluded, and why
 
@@ -245,7 +284,7 @@ code to cover).
 
 **Excluded from the 100% target, with justification:**
 
-1. **`supabase/functions/<name>/index.ts` (all 7 files).** These are the
+1. **`supabase/functions/<name>/index.ts` (all 11 files).** These are the
    Deno-only wiring layer: `serve()`, `Deno.env.get(...)`, the real
    `@supabase/supabase-js` and `@stacks/transactions` imports via
    `https://esm.sh/...` URLs. They cannot be imported or executed by
@@ -293,6 +332,71 @@ adversarial-test callouts in Section 12:
 this environment — see `tests/rls/README.md` for exact run instructions once
 Docker is available. They do not count toward the 100% coverage figure
 above.
+
+## Custodial wallet infrastructure (Smart Contract PRD Section 3 / Section 7 / Section 10 Phase B)
+
+Implements Phase B items 5-7 of the Smart Contract PRD's step-by-step plan:
+keypair generation on signup, a one-time-viewable export flow, and
+"connect external wallet". See
+[`WALLET_INTEGRATION.md`](../backend/WALLET_INTEGRATION.md) for the
+client-side (`sats-connect`) half of the connect flow — **no driver-facing
+UI exists yet in this repo**, that document is a handoff spec.
+
+- **Data model** (`supabase/migrations/20260101000006_wallet_infrastructure.sql`):
+  `wallet_keys` (one custodial key per driver, envelope-encrypted, RLS
+  enabled with **zero** client-facing policies — service-role only, same
+  deny-by-omission pattern as `rewards`/`redemptions`), `wallet_events`
+  (append-only audit trail, driver-readable via a `select`-own policy, never
+  client-writable), and `wallet_connect_challenges` (one-time nonces,
+  service-role only).
+- **Encryption**: AES-256-GCM via Node's/Deno's built-in `node:crypto`
+  (`_shared/wallet-crypto.ts`) — authenticated encryption, no extra
+  dependency. The master key is injected (never imported/hardcoded), read in
+  production from the `WALLET_MASTER_ENCRYPTION_KEY` Edge Function secret
+  (see `.env.example`); `wallet_keys.encryption_key_id` records which
+  key/version encrypted a given row, for future rotation.
+- **Stacks keypair generation**: `_shared/wallet-crypto.ts`'s
+  `generateStacksKeypair` builds a **compressed**-format private key (the
+  format Leather/Xverse use for standard single-sig addresses — the
+  underlying `@stacks/transactions` library's own default is uncompressed,
+  which would produce a non-standard address), behind an injectable
+  `StacksKeypairSource` so tests use deterministic bytes.
+- **Wallet-ownership verification**: `verifyWalletOwnership` uses an RSV
+  (recoverable) ECDSA signature to recover the signer's public key directly
+  from the signature + challenge-message hash — no separate public-key input
+  needed, matching the exact 3-argument shape (`address, nonce, signature`)
+  the task specified, and matching what a `sats-connect` `stx_signMessage`
+  call returns. Tested against **real** keypairs/signatures generated with
+  the same `@stacks/transactions`/`@stacks/encryption` libraries, not mocks.
+- **`@stacks/transactions` / `@stacks/encryption` as real `dependencies`**
+  (not just Deno `esm.sh` imports like `payout.ts`'s Stacks calls): signature
+  verification and key generation are pure, deterministic, **offline**
+  operations — no network I/O — so unlike `payout.ts`'s network-bound
+  Stacks calls, there's no testability reason to inject them behind a fake.
+  This is a deliberate, documented departure from every other `_shared`
+  module's zero-external-import style; see the header comment in
+  `_shared/wallet-crypto.ts` for the full rationale, including the caveat
+  that a real Deno deployment of this bare npm specifier needs a
+  `deno.json` import-map entry (Deno itself was not available in this
+  environment to verify end-to-end).
+- **Export is "shown once" only as a UX convention, not a server-enforced
+  guarantee.** `exportWalletKey` decrypts, logs an `exported` audit event,
+  and returns the key — a stateless HTTP endpoint cannot itself prevent a
+  client from calling it twice or persisting the response. `export-wallet-key`
+  is also the one wallet function with **no internal-call bypass** at all
+  (see its `index.ts`): every export must be a direct, driver-authenticated
+  request.
+- **Connect-external-wallet only deletes a *custodial* key.** If a driver is
+  re-linking a *different* external wallet (their existing `wallet_keys` row
+  is already `wallet_type = 'external'`), `connectExternalWallet` correctly
+  does nothing to `wallet_keys` — there is no AlertGuard-held key to delete
+  for them.
+- **`generateAndStoreWallet` throws on double-generation** rather than
+  silently minting a second keypair or returning the existing one — a silent
+  second generation would overwrite `profiles.wallet_address` out from under
+  any balance already tied to the first address, with no "list past wallets"
+  endpoint to recover from it. `wallet_keys.driver_id` is also `UNIQUE` at
+  the DB layer as a second line of defense.
 
 ## Design decisions worth knowing about
 
