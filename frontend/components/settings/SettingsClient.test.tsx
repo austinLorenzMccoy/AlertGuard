@@ -15,6 +15,8 @@ describe("SettingsClient", () => {
           vibration: { sms: false, email: true },
           soft: { sms: false, email: false },
         }}
+        currentUserRole="fleet_manager"
+        currentUserFleetId="f1"
       />,
     );
     expect(screen.getByLabelText("Fleet name")).toHaveValue("Lacoco Fleet");

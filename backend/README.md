@@ -44,6 +44,7 @@ backend/
 | `20260101000004_rls_policies.sql` | RLS enabled on **every** table with user data, all PRD-listed policies, plus the fleet_manager insert/update policies and hardening triggers the PRD implies but doesn't spell out (see the long comment block at the top of the file for the full rationale) |
 | `20260101000005_pg_cron_jobs.sql` | Registers the reward-reconciliation (`*/5 * * * *`) and weekly fleet-reports (`0 0 * * 0`) cron jobs via `pg_cron` + `pg_net`, calling the deployed Edge Functions over HTTP |
 | `20260101000006_wallet_infrastructure.sql` | `wallet_keys` (custodial private keys, envelope-encrypted, service-role-only — no client policies at all), `wallet_events` (append-only audit trail, driver-readable), `wallet_connect_challenges` (one-time connect-external-wallet nonces, service-role-only) — Smart Contract PRD Section 3 / Section 7 / Section 10 Phase B items 5-7 |
+| `20260101000007_role_change_audit.sql` | `role_change_events` (append-only audit trail for `manage-user-role`, service-role-only — no client policies at all) + `find_user_id_by_email(text)`, a `SECURITY DEFINER` helper (execute revoked from `public`, granted only to `service_role`) that resolves an email to an `auth.users` id without exposing the `auth` schema to PostgREST — see "Promote user to fleet_manager/admin" below |
 
 ### Edge Functions (PRD Section 10)
 
@@ -60,8 +61,9 @@ backend/
 | `export-wallet-key` | Decrypts and returns a driver's custodial private key (shown once, logged) | `_shared/wallet.ts`, `_shared/wallet-crypto.ts` |
 | `request-wallet-connect-challenge` | Issues a one-time nonce for the "connect external wallet" flow | `_shared/wallet-crypto.ts` |
 | `connect-external-wallet` | Verifies a signed challenge, replaces `profiles.wallet_address`, deletes the old custodial key | `_shared/wallet.ts`, `_shared/wallet-crypto.ts` |
+| `manage-user-role` | Promotes an already-signed-up user to `fleet_manager`/`admin` from the fleet dashboard's Settings page | `_shared/roles.ts` |
 
-`_shared/auth.ts` is the caller-authorization gate shared by all eleven
+`_shared/auth.ts` is the caller-authorization gate shared by all twelve
 (`authorizeCaller` for JWT-validated client calls, `isInternalCall` for the
 shared-secret internal-only calls — see "Auth model" below).
 
@@ -180,10 +182,10 @@ npm test          # vitest run
 npm run coverage  # vitest run --coverage
 ```
 
-**Result: 200 tests, all passing, across 10 spec files** (one per
+**Result: 221 tests, all passing, across 11 spec files** (one per
 `_shared/*.ts` module: `auth`, `verification`, `rewards`, `payout`,
 `notifications`, `redemptions`, `reconciliation`, `fleetReports`,
-`wallet-crypto`, `wallet`).
+`wallet-crypto`, `wallet`, `roles`).
 
 **Coverage: 100% lines / 100% branches / 100% functions / 100% statements**
 on every file under `supabase/functions/_shared/` (excluding `types.ts`,
@@ -209,6 +211,7 @@ All files          |     100 |      100 |     100 |     100 |
  verification.ts   |     100 |      100 |     100 |     100 |
  wallet-crypto.ts  |     100 |      100 |     100 |     100 |
  wallet.ts         |     100 |      100 |     100 |     100 |
+ roles.ts          |     100 |      100 |     100 |     100 |
 -------------------|---------|----------|---------|---------|
 ```
 
@@ -275,6 +278,17 @@ All files          |     100 |      100 |     100 |     100 |
   different external wallet) plus every documented failure branch
   (`challenge_not_found`, `challenge_already_consumed`, `challenge_expired`,
   `invalid_signature`), and the default-to-the-real-verifier wiring.
+- **`roles.test.ts`** (21 tests) — every branch of `authorizeRoleChange`
+  (driver/no-profile caller forbidden; fleet_manager caller can only grant
+  fleet_manager, with the caller's own `fleet_id` always forced regardless of
+  what was requested; fleet_manager requesting admin forbidden; admin caller
+  granting fleet_manager with/without/blank `fleet_id` — `fleet_id_required`;
+  admin caller granting admin with a `fleet_id`, with `null`, and with none at
+  all), and `manageUserRole`'s orchestration (success paths for both caller
+  roles, the `cannot_modify_own_role` self-promotion guard — proven to run
+  before the caller-profile lookup, the authorization check, and any write —
+  `user_not_found`, `forbidden` for a driver/no-profile caller, and
+  `profile_not_ready` for a target with no `profiles` row).
 
 ### Coverage: what's included, what's excluded, and why
 
@@ -284,7 +298,7 @@ code to cover).
 
 **Excluded from the 100% target, with justification:**
 
-1. **`supabase/functions/<name>/index.ts` (all 11 files).** These are the
+1. **`supabase/functions/<name>/index.ts` (all 12 files).** These are the
    Deno-only wiring layer: `serve()`, `Deno.env.get(...)`, the real
    `@supabase/supabase-js` and `@stacks/transactions` imports via
    `https://esm.sh/...` URLs. They cannot be imported or executed by
@@ -397,6 +411,76 @@ UI exists yet in this repo**, that document is a handoff spec.
   any balance already tied to the first address, with no "list past wallets"
   endpoint to recover from it. `wallet_keys.driver_id` is also `UNIQUE` at
   the DB layer as a second line of defense.
+
+## Promote user to fleet_manager/admin (`manage-user-role`)
+
+Replaces "hand-run SQL in the Supabase SQL Editor" with a real in-app
+feature: an admin or fleet_manager on the fleet dashboard's Settings page
+types an already-signed-up user's email and promotes them to `fleet_manager`
+or `admin`. Always an end-user-initiated request (the caller's own JWT) —
+there is no internal-call/shared-secret path for this function.
+
+- **Pure logic**: `_shared/roles.ts` — `authorizeRoleChange` (the
+  caller-role x requested-role x fleet_id decision, no DB access) and
+  `manageUserRole` (the DB-touching orchestration, DI'd against injectable
+  repo interfaces, same shape as `_shared/wallet.ts`). Wiring:
+  `supabase/functions/manage-user-role/index.ts`.
+- **Authorization rules** (`authorizeRoleChange`):
+  - Caller role `driver`, or no `profiles` row at all -> `forbidden`.
+  - Caller role `fleet_manager` -> may only grant `fleet_manager`, and the
+    target's `fleet_id` is **always forced to the caller's own `fleet_id`**
+    — whatever `fleet_id` was in the request is ignored/overwritten, so a
+    fleet_manager can never assign a driver into a fleet other than their
+    own. Requesting `admin` -> `forbidden`.
+  - Caller role `admin` -> may grant `fleet_manager` (a `fleet_id` is
+    **required** in the request — `fleet_id_required` if missing/blank — an
+    admin promoting someone to fleet_manager must say which fleet) or
+    `admin` (`fleet_id` is optional, passed through exactly as given,
+    including `null`).
+- **Self-promotion guard — read this if you touch this code.**
+  `guard_profile_self_escalation`
+  (`supabase/migrations/20260101000004_rls_policies.sql`, ~line 134) blocks a
+  user from changing their own `role`/`fleet_id` **only when
+  `auth.role() <> 'service_role'`** — and `manage-user-role` runs under the
+  service-role key, so the DB trigger does **not** protect this endpoint.
+  `manageUserRole` in `_shared/roles.ts` is the only thing that does: it
+  resolves the target email to a user id first, and if that id equals the
+  caller's own `userId`, it rejects unconditionally with
+  `cannot_modify_own_role` — **before** the caller-profile lookup, the
+  `authorizeRoleChange` decision, or any write. This holds regardless of the
+  caller's current role (an admin cannot use this endpoint on their own row
+  either). See `roles.test.ts`'s
+  `"rejects with cannot_modify_own_role, unconditionally, before any
+  role-authorization logic runs, when the target email is the caller's own
+  account"` test, which also asserts none of the downstream repo methods
+  were even called.
+- **Email -> user id lookup**: `auth.users` isn't exposed via PostgREST and
+  has no `profiles`-style RLS policies to lean on, so
+  `find_user_id_by_email(text)` (`20260101000007_role_change_audit.sql`) is a
+  `SECURITY DEFINER` SQL function reading it directly (same technique as
+  `current_role()`/`current_fleet_id()` in `20260101000004_rls_policies.sql`)
+  — with `EXECUTE` explicitly revoked from `PUBLIC` and granted only to
+  `service_role`, so an anon/authenticated caller can never use it as an
+  email-enumeration oracle via the RPC endpoint. In `_shared/roles.ts` this
+  is behind the injectable `TargetUserResolver` interface, so the pure
+  orchestration logic is tested with a fake, never a real network call.
+- **`user_not_found` is an expected, common outcome, not an error.** The
+  target hasn't necessarily signed in yet — `manage-user-role` returns a
+  distinct `user_not_found` reason (mapped to HTTP 404) rather than a generic
+  500, so the frontend can show a clear "this person needs to sign in to
+  AlertGuard at least once first" message. A target that exists in
+  `auth.users` but somehow has no `profiles` row yet (shouldn't happen given
+  `handle_new_user`, but not assumed) returns `profile_not_ready` instead of
+  crashing.
+- **Audit trail**: every successful role change writes a
+  `role_change_events` row (`20260101000007_role_change_audit.sql` —
+  `actor_id`, `target_id`, `old_role`/`new_role`, `old_fleet_id`/
+  `new_fleet_id`) — RLS enabled, zero client policies, same
+  service-role-only deny-by-omission pattern as `wallet_keys`/
+  `wallet_connect_challenges`.
+- **HTTP status mapping** (`manage-user-role/index.ts`): 200 success; 403
+  `forbidden`/`cannot_modify_own_role`; 404 `user_not_found`/
+  `profile_not_ready`; 400 `invalid_request`/`fleet_id_required`.
 
 ## Design decisions worth knowing about
 

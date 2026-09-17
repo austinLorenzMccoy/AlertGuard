@@ -113,3 +113,20 @@ export function requireFleetId(context: FleetContext): string {
       "render behind app/(dashboard)/layout.tsx, which redirects away every other status.",
   );
 }
+
+/**
+ * Extracts the resolved `profile` from a `demo`/`ok` context, or throws —
+ * same contract and error message as `requireFleetId`, for callers that need
+ * the signed-in fleet manager/admin's own role (e.g. Settings' role-gated
+ * "promote user" form) from the same already-fetched `FleetContext`, without
+ * a second `getFleetContext()` call.
+ */
+export function requireProfile(context: FleetContext): Profile {
+  if (context.status === "demo" || context.status === "ok") {
+    return context.profile;
+  }
+  throw new Error(
+    `Fleet context is not resolved (status: "${context.status}"). This page must only ` +
+      "render behind app/(dashboard)/layout.tsx, which redirects away every other status.",
+  );
+}

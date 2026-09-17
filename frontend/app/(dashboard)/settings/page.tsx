@@ -1,5 +1,5 @@
 import { SettingsClient } from "@/components/settings/SettingsClient";
-import { getFleetContext, requireFleetId } from "@/lib/auth/fleet-context";
+import { getFleetContext, requireFleetId, requireProfile } from "@/lib/auth/fleet-context";
 import { getServerDataSource } from "@/lib/data/get-data-source";
 
 // Fleet-scoped, session-dependent data — must render per-request, never
@@ -7,7 +7,9 @@ import { getServerDataSource } from "@/lib/data/get-data-source";
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
-  const fleetId = requireFleetId(await getFleetContext());
+  const fleetContext = await getFleetContext();
+  const fleetId = requireFleetId(fleetContext);
+  const currentUserProfile = requireProfile(fleetContext);
   const client = getServerDataSource();
   const [fleets, managers] = await Promise.all([
     client.getFleets({ id: fleetId }),
@@ -27,6 +29,8 @@ export default async function SettingsPage() {
           vibration: { sms: false, email: true },
           soft: { sms: false, email: false },
         }}
+        currentUserRole={currentUserProfile.role}
+        currentUserFleetId={currentUserProfile.fleet_id}
       />
     </div>
   );

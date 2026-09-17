@@ -110,7 +110,11 @@ that got replaced:
   `unauthenticated` / `unauthorized_role` / `no_fleet` / `ok`) — see its doc
   comment for the judgment call on admins with no `fleet_id`.
   `requireFleetId()` is the small helper every dashboard page calls to
-  defensively assert the layout already redirected away any unresolved state.
+  defensively assert the layout already redirected away any unresolved state;
+  `requireProfile()` is the same contract for callers that need the signed-in
+  user's own `profiles` row instead (e.g. Settings' role-gated "promote user"
+  form — see "Promote user to fleet_manager/admin" below), from the same
+  already-fetched context, without a second `getFleetContext()` call.
 - `lib/auth/middleware-logic.ts` — the pure "should this request redirect to
   /login" decision `middleware.ts` delegates to, so it's unit-tested directly
   rather than through a simulated Next.js request/response pipeline.
@@ -149,6 +153,48 @@ that got replaced:
   cookie on every request and redirects unauthenticated visitors away from
   dashboard routes, via `lib/auth/middleware-logic.ts`.
 
+### Promote user to fleet_manager/admin
+
+Settings' "Manager accounts" panel (`components/settings/ManagerList.tsx`) lets
+a signed-in fleet_manager/admin promote an already-signed-up user by email,
+replacing "hand-run SQL in the Supabase SQL Editor" with a real in-app flow.
+
+- **Never touches the Supabase service-role key.** `app/(dashboard)/settings/actions.ts`'s
+  `promoteUser` Server Action (`"use server"`) gets the *caller's own*
+  session-bound access token via `lib/supabase-server.ts`'s
+  `createServerSupabaseClient().auth.getSession()`, then does a
+  server-to-server `fetch()` to
+  `${NEXT_PUBLIC_SUPABASE_URL}/functions/v1/manage-user-role` with
+  `Authorization: Bearer <that token>` — the same JWT-validation path every
+  other end-user Edge Function call uses in this backend, not a privileged
+  bypass. The action maps the Edge Function's `reason` strings 1:1
+  (`cannot_modify_own_role`, `user_not_found`, `profile_not_ready`,
+  `forbidden`, `fleet_id_required`, `invalid_request`) plus a catch-all
+  `"error"` for anything it can't classify (missing session, network failure,
+  unparseable response), so the UI never has to guess.
+- **UI gating mirrors backend authorization, but doesn't replace it.**
+  `ManagerList` only offers the "Admin" role option when the signed-in
+  caller's own role (threaded down from `app/(dashboard)/settings/page.tsx`'s
+  `getFleetContext()` via the new `requireProfile()` helper — see
+  "Architecture" above) is `admin`; a fleet_manager caller never even sees
+  the option. This is a UX nicety only — `manage-user-role`'s own
+  authorization logic (`backend/supabase/functions/_shared/roles.ts`) is the
+  actual enforcement point and rejects a `fleet_manager` caller requesting
+  `admin` regardless of what the client sends.
+- **Every outcome gets its own honest message**: success
+  ("`<email>` promoted to `<role>`."), `user_not_found` ("this person needs
+  to sign in to AlertGuard at least once before they can be promoted"),
+  `forbidden`/`cannot_modify_own_role`, `fleet_id_required` (an admin
+  promoting to fleet_manager must enter a fleet ID), or a generic error — no
+  optimistic local-state append pretending the call already succeeded.
+- **Demo mode is completely unchanged.** `ManagerList` uses the same
+  `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY` presence check
+  used throughout this frontend (mirrored locally, same as
+  `components/login/LoginClient.tsx`, since it's a Client Component); without
+  those vars it keeps the original local-`useState`-only "Send invite"
+  behavior verbatim — no role selector, no Fleet ID input, no Server Action
+  call — so `npm run dev` with no Supabase project stays fully browsable.
+
 ### Design tokens
 
 `tailwind.config.ts` extends the Tailwind theme with the exact hex values from
@@ -186,7 +232,7 @@ npm run test:coverage # vitest run --coverage
 Stack: Vitest + `@testing-library/react` + `@testing-library/jest-dom` +
 `@testing-library/user-event`, jsdom environment, v8 coverage provider.
 
-**Current result: 314 tests, all passing, 100% coverage** (lines/branches/
+**Current result: 340 tests, all passing, 100% coverage** (lines/branches/
 functions/statements, `coverage.thresholds` in `vitest.config.ts` enforces this —
 `npm run test:coverage` fails the build if it regresses).
 
@@ -234,6 +280,19 @@ What's covered:
 - `app/(dashboard)/layout.tsx`: all five `FleetContext` status branches
   (demo/ok render children, unauthenticated/unauthorized_role redirect,
   no_fleet renders the "contact your admin" message).
+- `app/(dashboard)/settings/actions.ts`'s `promoteUser` Server Action: missing
+  `NEXT_PUBLIC_SUPABASE_URL`, no session/access token, a successful
+  `manage-user-role` response, every known error `reason`, an unrecognized
+  reason, an unparseable response body, and a thrown `fetch` — `lib/supabase-server.ts`
+  and `fetch` are both mocked, no real network call is made.
+- `components/settings/ManagerList.tsx`: demo mode unchanged (no role
+  selector/Fleet ID input, no Server Action call, local-state-only invite);
+  real mode's role selector (Admin option gated on the caller's own role),
+  the Fleet ID input's required-for-fleet_manager / optional-for-admin
+  labeling, the client-side `fleet_id_required` pre-check, the pending
+  "Sending..." state, and every `promoteUser` outcome (success for both
+  roles, `user_not_found`, `forbidden`, `cannot_modify_own_role`, and a
+  generic error).
 
 ### Coverage exclude list
 

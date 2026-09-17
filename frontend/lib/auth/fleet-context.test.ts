@@ -6,7 +6,7 @@ vi.mock("@/lib/supabase-server", () => ({
   createServerSupabaseClient: () => createServerSupabaseClientMock(),
 }));
 
-import { getFleetContext, requireFleetId } from "@/lib/auth/fleet-context";
+import { getFleetContext, requireFleetId, requireProfile } from "@/lib/auth/fleet-context";
 import type { FleetContext } from "@/lib/auth/fleet-context";
 
 function makeFakeClient(opts: {
@@ -206,5 +206,57 @@ describe("requireFleetId", () => {
     },
   ])("throws for a $status context", (context) => {
     expect(() => requireFleetId(context)).toThrow(/Fleet context is not resolved/);
+  });
+});
+
+describe("requireProfile", () => {
+  it("returns the profile for a demo context", () => {
+    const profile = {
+      id: "mgr-1",
+      full_name: "Ada Obi",
+      phone: null,
+      role: "fleet_manager" as const,
+      fleet_id: "f1",
+      wallet_address: null,
+      created_at: "",
+      updated_at: "",
+    };
+    const context: FleetContext = { status: "demo", fleetId: "f1", profile };
+    expect(requireProfile(context)).toEqual(profile);
+  });
+
+  it("returns the profile for an ok context", () => {
+    const profile = {
+      id: "mgr-1",
+      full_name: "Ada Obi",
+      phone: null,
+      role: "admin" as const,
+      fleet_id: "f2",
+      wallet_address: null,
+      created_at: "",
+      updated_at: "",
+    };
+    const context: FleetContext = { status: "ok", fleetId: "f2", profile };
+    expect(requireProfile(context)).toEqual(profile);
+  });
+
+  it.each<FleetContext>([
+    { status: "unauthenticated" },
+    { status: "unauthorized_role", role: "driver" },
+    {
+      status: "no_fleet",
+      profile: {
+        id: "mgr-1",
+        full_name: "Ada Obi",
+        phone: null,
+        role: "fleet_manager",
+        fleet_id: null,
+        wallet_address: null,
+        created_at: "",
+        updated_at: "",
+      },
+    },
+  ])("throws for a $status context", (context) => {
+    expect(() => requireProfile(context)).toThrow(/Fleet context is not resolved/);
   });
 });
