@@ -3,6 +3,10 @@ import { FLEET_ID } from "@/lib/data/demo-seed";
 import { buildDriverInfoBySessionId, getLiveAlerts } from "@/lib/data/alerts";
 import { getDataSource } from "@/lib/data/get-data-source";
 
+// Fleet-scoped, session-dependent, realtime data — must render per-request,
+// never statically prerendered at build time.
+export const dynamic = "force-dynamic";
+
 export default async function AlertsPage() {
   const client = getDataSource();
   const [rows, sessions, drivers] = await Promise.all([
