@@ -1,16 +1,17 @@
 import { SettingsClient } from "@/components/settings/SettingsClient";
-import { FLEET_ID } from "@/lib/data/demo-seed";
-import { getDataSource } from "@/lib/data/get-data-source";
+import { getFleetContext, requireFleetId } from "@/lib/auth/fleet-context";
+import { getServerDataSource } from "@/lib/data/get-data-source";
 
 // Fleet-scoped, session-dependent data — must render per-request, never
 // statically prerendered at build time.
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
-  const client = getDataSource();
+  const fleetId = requireFleetId(await getFleetContext());
+  const client = getServerDataSource();
   const [fleets, managers] = await Promise.all([
-    client.getFleets({ id: FLEET_ID }),
-    client.getProfiles({ fleet_id: FLEET_ID, role: "fleet_manager" }),
+    client.getFleets({ id: fleetId }),
+    client.getProfiles({ fleet_id: fleetId, role: "fleet_manager" }),
   ]);
   const fleet = fleets[0] ?? null;
 

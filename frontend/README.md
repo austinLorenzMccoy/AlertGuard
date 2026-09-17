@@ -5,7 +5,9 @@ and redemption administration for fleet managers/admins. Built per
 `docs/AlertGuard-Frontend-PRD.md` (Sections 3, 7–10, 12, 15 — web scope only) and
 `docs/AlertGuard-Backend-PRD.md` (Sections 4, 6–8 — schema, RLS, realtime, REST shape).
 
-Stack: Next.js 14 (App Router) + TypeScript + Tailwind CSS + `@supabase/supabase-js`.
+Stack: Next.js 14 (App Router) + TypeScript + Tailwind CSS + `@supabase/supabase-js`
++ `@supabase/ssr` (cookie-based session handling for Server Components,
+Middleware and the OAuth callback Route Handler).
 
 ## Setup
 
@@ -24,25 +26,62 @@ mode** (see below) and is fully browsable without a backend.
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon/public API key |
 
-Neither a real Supabase project nor Google OAuth is wired up in this build — both
-are out of scope per the task brief. `lib/supabase-client.ts` throws a clear error
-if you construct a live client without these vars set; `lib/data/get-data-source.ts`
-is the single call site that decides live vs. demo, so wiring a real project later
-is a one-file change.
+That's the complete list — there is no `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`
+var in this app, and there shouldn't be one. Google's OAuth client credentials
+live entirely in the Supabase dashboard (Authentication -> Providers -> Google);
+this app only ever talks to Supabase Auth, never to Google directly.
 
-### Demo mode
+`lib/data/get-data-source.ts` is the single call site that decides demo vs. real
+per request; `lib/supabase-client.ts`/`lib/supabase-server.ts` throw a clear error
+if you construct a live client without the two vars above set.
 
-When the env vars above are unset, `getDataSource()` (`lib/data/get-data-source.ts`)
-returns an in-memory `AlertGuardDataSource` (`lib/data/fake-data-source.ts`) seeded
-from `lib/data/demo-seed.ts` — a small fictional "Lacoco Fleet" with a few drivers,
-sessions, drowsiness events, rewards, redemptions, and two report periods. Every
-screen renders against this data with no network calls. `npx next build` succeeds
-in this mode too (verified).
+#### Manual step: Supabase Redirect URLs (real auth only)
 
-Login's "Continue with Google" button is a stand-in: since no real Google OAuth is
-wired, a "demo role" selector stands in for the role Supabase Auth would put on the
-session, so the role-based redirect logic (`lib/logic/auth-redirect.ts`) is still
-exercised end-to-end.
+Real Google sign-in round-trips through `app/auth/callback/route.ts`. Supabase
+will only redirect back to a URL you've explicitly allowlisted — this is a
+one-time **dashboard** step, not something this repo's code can do for you:
+
+1. Supabase dashboard -> **Authentication -> URL Configuration -> Redirect URLs**
+2. Add `http://localhost:3000/auth/callback` (local dev) and
+   `https://<your-production-domain>/auth/callback` (deployed).
+
+Do **not** touch the Google Cloud Console OAuth client's redirect URI for this —
+it should already correctly point at Supabase's own
+`https://<project-ref>.supabase.co/auth/v1/callback`, which is a different URL
+from this app's `/auth/callback` and is unrelated to the step above.
+
+### Demo vs. real auth
+
+Whether the app runs in demo or real-auth mode is decided once, by the same
+check used throughout (`NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY`
+set or not) — both paths are live in this codebase side by side, not a stub
+that got replaced:
+
+- **Demo mode** (env vars unset): `getDataSource()`/`getServerDataSource()`
+  (`lib/data/get-data-source.ts`) return an in-memory `AlertGuardDataSource`
+  (`lib/data/fake-data-source.ts`) seeded from `lib/data/demo-seed.ts` — a small
+  fictional "Lacoco Fleet" with a few drivers, sessions, drowsiness events,
+  rewards, redemptions, and two report periods. Every screen renders against
+  this data with no network calls. `LoginClient` renders the demo role
+  selector, and `lib/auth/fleet-context.ts`'s `getFleetContext()` returns the
+  `demo` branch using the "mgr-1" (Ada Obi, fleet_manager) fixture profile.
+  `npx next build` succeeds in this mode with no env vars present (verified).
+
+- **Real mode** (env vars set): `LoginClient` renders a real "Continue with
+  Google" button (`supabase.auth.signInWithOAuth`, via the browser client in
+  `lib/supabase-browser.ts`). `app/auth/callback/route.ts` completes the
+  OAuth code exchange and writes the session cookie. `middleware.ts` refreshes
+  that cookie on every request and gates unauthenticated visitors out of the
+  dashboard routes. `app/(dashboard)/layout.tsx` resolves the signed-in
+  fleet manager/admin's `profiles` row via `lib/auth/fleet-context.ts`'s
+  `getFleetContext()`, redirecting non-fleet-managers to `/download` (PRD
+  Section 8.1) and rendering a "no fleet assigned" message if `fleet_id` is
+  null. Every `app/(dashboard)/**/page.tsx` reads through
+  `getServerDataSource()`, which builds the `AlertGuardDataSource` from the
+  *session-bound* server client (`lib/supabase-server.ts`, via `@supabase/ssr`
+  + `next/headers`' `cookies()`) instead of a bare anon-key client — this is
+  what makes the real project's RLS policies (which key off `auth.uid()`)
+  actually authorize the query instead of silently returning zero rows.
 
 ## Architecture
 
@@ -53,8 +92,28 @@ exercised end-to-end.
 - `lib/data/data-source.ts` — `AlertGuardDataSource`, the thin interface every data
   function is written against (`getProfiles`, `getDrivingSessions`, ...). This is
   the "swappable client" boundary.
-  - `lib/supabase-client.ts` implements it against real `@supabase/supabase-js`.
+  - `lib/supabase-client.ts` implements it against real `@supabase/supabase-js`,
+    wrapping either a bare anon-key client or a session-bound one — the caller
+    decides which client to hand it.
   - `lib/data/fake-data-source.ts` implements it in-memory, for tests and demo mode.
+- `lib/supabase-server.ts` / `lib/supabase-browser.ts` — `@supabase/ssr` clients
+  for Server Components/Route Handlers/Middleware and Client Components
+  respectively, both persisting the session to cookies (not localStorage) so
+  they see the same session. `lib/supabase-server.ts`'s cookie-adapter
+  construction (`buildCookieAdapter`/`buildServerSupabaseClient`) is a plain,
+  injectable function tested without a real Next.js request context; only the
+  one-line `next/headers` `cookies()` call in `createServerSupabaseClient` is
+  wiring, mocked via `vi.mock("next/headers", ...)` in tests.
+- `lib/auth/fleet-context.ts` — `getFleetContext()`, wrapped in React's
+  `cache()`, resolves the signed-in fleet manager/admin's `profiles` row and
+  `fleet_id` for the current request as a discriminated union (`demo` /
+  `unauthenticated` / `unauthorized_role` / `no_fleet` / `ok`) — see its doc
+  comment for the judgment call on admins with no `fleet_id`.
+  `requireFleetId()` is the small helper every dashboard page calls to
+  defensively assert the layout already redirected away any unresolved state.
+- `lib/auth/middleware-logic.ts` — the pure "should this request redirect to
+  /login" decision `middleware.ts` delegates to, so it's unit-tested directly
+  rather than through a simulated Next.js request/response pipeline.
 - `lib/data/{overview,drivers,alerts,reports,redemptions}.ts` — the
   `getFleetOverview` / `getDrivers` / `getDriverDetail` / `getLiveAlerts` /
   `getFleetReports` / `getRedemptions` functions called from `app/**/page.tsx`
@@ -79,10 +138,16 @@ exercised end-to-end.
 - `components/**` — one folder per screen area, split into presentational pieces
   and a `*Client.tsx` component that owns interactive state (sort/filter, realtime
   subscription, forms).
-- `app/**` — App Router pages. Server components fetch via `getDataSource()` and
+- `app/**` — App Router pages. `app/(dashboard)/**` Server Components fetch via
+  `getServerDataSource()` (session-bound in real mode, demo seed otherwise) and
   pass data to the client components above. `realtimeClient` is passed as `null`
   from pages in this build (no live Supabase socket is configured) — wiring a real
   one is a one-line change per page once a Supabase project exists.
+  `app/(dashboard)/layout.tsx` is the auth gate (see "Demo vs. real auth" above);
+  `app/auth/callback/route.ts` completes the OAuth flow.
+- `middleware.ts` (project root, outside `app/`) — refreshes the Supabase session
+  cookie on every request and redirects unauthenticated visitors away from
+  dashboard routes, via `lib/auth/middleware-logic.ts`.
 
 ### Design tokens
 
@@ -121,9 +186,17 @@ npm run test:coverage # vitest run --coverage
 Stack: Vitest + `@testing-library/react` + `@testing-library/jest-dom` +
 `@testing-library/user-event`, jsdom environment, v8 coverage provider.
 
-**Current result: 255 tests, all passing, 100% coverage** (lines/branches/
+**Current result: 314 tests, all passing, 100% coverage** (lines/branches/
 functions/statements, `coverage.thresholds` in `vitest.config.ts` enforces this —
 `npm run test:coverage` fails the build if it regresses).
+
+`vitest.setup.ts` mocks `react`'s `cache` export with an identity fallback:
+`React.cache()` (used by `lib/auth/fleet-context.ts`) only exists on the
+"react-server" build of the `react` package, which Next.js's own bundler
+selects automatically for the Server Components graph but which Vitest (on
+Vite, not Next's bundler) never does — without the shim, any module calling
+`cache(fn)` at import time throws under test. This is Next.js/React framework
+machinery, not app logic under test.
 
 What's covered:
 - Every `lib/logic/*.ts` module, with tests for each branch (band thresholds at
@@ -147,7 +220,20 @@ What's covered:
   `LoginClient`'s demo-role flow.
 - Every `app/**/page.tsx`, by calling the async Server Component function directly
   and rendering its returned element — including the `notFound()` branch on driver
-  detail and the null-fleet/null-manager-phone fallback branches on Settings/Reports.
+  detail, the null-fleet/null-manager-phone fallback branches on Settings/Reports,
+  and the defensive `requireFleetId()` throw when the fleet context somehow isn't
+  resolved by the time a page renders.
+- `lib/auth/fleet-context.ts`: every branch of the `FleetContext` discriminated
+  union (`demo`, `unauthenticated` — including the "authenticated but no
+  `profiles` row" edge case — `unauthorized_role` for both `driver` and an
+  unrecognized role value, `no_fleet` for both `fleet_manager` and `admin`,
+  `ok`), against a hand-rolled fake of the supabase-js client.
+- `lib/auth/middleware-logic.ts`: the pure redirect decision directly, and
+  `app/auth/callback/route.ts`'s `GET` handler directly (valid code, missing
+  code, and a failed `exchangeCodeForSession`).
+- `app/(dashboard)/layout.tsx`: all five `FleetContext` status branches
+  (demo/ok render children, unauthenticated/unauthorized_role redirect,
+  no_fleet renders the "contact your admin" message).
 
 ### Coverage exclude list
 
@@ -175,7 +261,18 @@ included and held to the 100% threshold. Dead/unreachable branches found along t
 way (e.g. a `switch` `default` case TypeScript could already prove exhaustive, or a
 `|| 1` divide-by-zero guard that turned out to be mathematically unreachable given
 the function's own floor/ceiling clamping) were removed from the source rather than
-special-cased in the exclude list, per the "keep this list honest" instruction.
+special-cased in the exclude list, per the "keep this list honest" instruction. The
+same applies to `lib/auth/fleet-context.ts`'s demo-profile lookup: no null-guard
+for a missing "mgr-1" fixture, since `demo-seed.ts` is static and checked in.
+
+`middleware.ts` (project root) is not measured at all — not via an exclusion, but
+because `coverage.include` in `vitest.config.ts` only scans `app/**`,
+`components/**`, and `lib/**`, and `middleware.ts` lives outside all three, the
+same as `tailwind.config.ts`/`next.config.mjs`/`vitest.config.ts` already do. Its
+one meaningful decision (which paths to redirect) is pulled out into
+`lib/auth/middleware-logic.ts`, which *is* covered; what's left in `middleware.ts`
+is Next.js/`@supabase/ssr` wiring (constructing the request/response cookie
+adapter) with no branches of its own.
 
 ## Project layout
 

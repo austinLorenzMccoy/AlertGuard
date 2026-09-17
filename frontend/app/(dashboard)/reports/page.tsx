@@ -1,17 +1,18 @@
 import { ReportsClient } from "@/components/reports/ReportsClient";
-import { FLEET_ID } from "@/lib/data/demo-seed";
+import { getFleetContext, requireFleetId } from "@/lib/auth/fleet-context";
 import { getFleetReports } from "@/lib/data/reports";
-import { getDataSource } from "@/lib/data/get-data-source";
+import { getServerDataSource } from "@/lib/data/get-data-source";
 
 // Fleet-scoped, session-dependent data — must render per-request, never
 // statically prerendered at build time.
 export const dynamic = "force-dynamic";
 
 export default async function ReportsPage() {
-  const client = getDataSource();
+  const fleetId = requireFleetId(await getFleetContext());
+  const client = getServerDataSource();
   const [reports, fleets] = await Promise.all([
-    getFleetReports(client, FLEET_ID),
-    client.getFleets({ id: FLEET_ID }),
+    getFleetReports(client, fleetId),
+    client.getFleets({ id: fleetId }),
   ]);
 
   return (

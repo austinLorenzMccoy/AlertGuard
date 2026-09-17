@@ -1,18 +1,19 @@
 import { LiveAlertsFeedClient } from "@/components/alerts/LiveAlertsFeedClient";
-import { FLEET_ID } from "@/lib/data/demo-seed";
+import { getFleetContext, requireFleetId } from "@/lib/auth/fleet-context";
 import { buildDriverInfoBySessionId, getLiveAlerts } from "@/lib/data/alerts";
-import { getDataSource } from "@/lib/data/get-data-source";
+import { getServerDataSource } from "@/lib/data/get-data-source";
 
 // Fleet-scoped, session-dependent, realtime data — must render per-request,
 // never statically prerendered at build time.
 export const dynamic = "force-dynamic";
 
 export default async function AlertsPage() {
-  const client = getDataSource();
+  const fleetId = requireFleetId(await getFleetContext());
+  const client = getServerDataSource();
   const [rows, sessions, drivers] = await Promise.all([
-    getLiveAlerts(client, FLEET_ID),
-    client.getDrivingSessions({ fleet_id: FLEET_ID }),
-    client.getProfiles({ fleet_id: FLEET_ID, role: "driver" }),
+    getLiveAlerts(client, fleetId),
+    client.getDrivingSessions({ fleet_id: fleetId }),
+    client.getProfiles({ fleet_id: fleetId, role: "driver" }),
   ]);
   const driverInfoBySessionId = buildDriverInfoBySessionId(sessions, drivers);
 

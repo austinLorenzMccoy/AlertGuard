@@ -3,8 +3,16 @@ import { describe, expect, it, vi } from "vitest";
 import { createFakeDataSource } from "@/lib/data/fake-data-source";
 import { buildTestSeed } from "@/lib/data/test-fixtures";
 
-const getDataSourceMock = vi.fn();
-vi.mock("@/lib/data/get-data-source", () => ({ getDataSource: () => getDataSourceMock() }));
+const getServerDataSourceMock = vi.fn();
+vi.mock("@/lib/data/get-data-source", () => ({
+  getServerDataSource: () => getServerDataSourceMock(),
+}));
+
+const getFleetContextMock = vi.fn();
+vi.mock("@/lib/auth/fleet-context", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/auth/fleet-context")>();
+  return { ...actual, getFleetContext: () => getFleetContextMock() };
+});
 
 const notFoundMock = vi.fn(() => {
   throw new Error("NEXT_NOT_FOUND");
@@ -15,7 +23,8 @@ import DriverDetailPage from "@/app/(dashboard)/drivers/[id]/page";
 
 describe("DriverDetailPage", () => {
   it("renders driver detail when the driver exists", async () => {
-    getDataSourceMock.mockReturnValue(
+    getFleetContextMock.mockResolvedValue({ status: "demo", fleetId: "f1", profile: {} });
+    getServerDataSourceMock.mockReturnValue(
       createFakeDataSource(
         buildTestSeed({
           profiles: [
@@ -30,8 +39,16 @@ describe("DriverDetailPage", () => {
   });
 
   it("calls notFound when the driver does not exist", async () => {
-    getDataSourceMock.mockReturnValue(createFakeDataSource(buildTestSeed({ profiles: [] })));
+    getFleetContextMock.mockResolvedValue({ status: "demo", fleetId: "f1", profile: {} });
+    getServerDataSourceMock.mockReturnValue(createFakeDataSource(buildTestSeed({ profiles: [] })));
     await expect(DriverDetailPage({ params: { id: "missing" } })).rejects.toThrow("NEXT_NOT_FOUND");
     expect(notFoundMock).toHaveBeenCalled();
+  });
+
+  it("never renders page content when the fleet context isn't resolved", async () => {
+    getFleetContextMock.mockResolvedValue({ status: "unauthenticated" });
+    await expect(DriverDetailPage({ params: { id: "d1" } })).rejects.toThrow(
+      /Fleet context is not resolved/,
+    );
   });
 });

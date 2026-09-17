@@ -3,8 +3,9 @@ import { DriverHeader } from "@/components/driver-detail/DriverHeader";
 import { RewardHistory } from "@/components/driver-detail/RewardHistory";
 import { ScoreTrendChart } from "@/components/driver-detail/ScoreTrendChart";
 import { SessionList } from "@/components/driver-detail/SessionList";
+import { getFleetContext, requireFleetId } from "@/lib/auth/fleet-context";
 import { getDriverDetail } from "@/lib/data/drivers";
-import { getDataSource } from "@/lib/data/get-data-source";
+import { getServerDataSource } from "@/lib/data/get-data-source";
 import { buildScoreTrend } from "@/lib/logic/trend";
 
 export default async function DriverDetailPage({
@@ -12,7 +13,12 @@ export default async function DriverDetailPage({
 }: {
   params: { id: string };
 }) {
-  const client = getDataSource();
+  // Not fleet-scoped by params (the driver id alone identifies the row),
+  // but still requires a resolved fleet context so this page never renders
+  // for a visitor the layout should have redirected away — see
+  // `requireFleetId`'s doc comment.
+  requireFleetId(await getFleetContext());
+  const client = getServerDataSource();
   const detail = await getDriverDetail(client, params.id);
 
   if (!detail) {

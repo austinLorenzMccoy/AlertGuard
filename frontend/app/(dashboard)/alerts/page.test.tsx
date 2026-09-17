@@ -4,14 +4,23 @@ import { createFakeDataSource } from "@/lib/data/fake-data-source";
 import { FLEET_ID } from "@/lib/data/demo-seed";
 import { buildTestSeed } from "@/lib/data/test-fixtures";
 
-const getDataSourceMock = vi.fn();
-vi.mock("@/lib/data/get-data-source", () => ({ getDataSource: () => getDataSourceMock() }));
+const getServerDataSourceMock = vi.fn();
+vi.mock("@/lib/data/get-data-source", () => ({
+  getServerDataSource: () => getServerDataSourceMock(),
+}));
+
+const getFleetContextMock = vi.fn();
+vi.mock("@/lib/auth/fleet-context", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/auth/fleet-context")>();
+  return { ...actual, getFleetContext: () => getFleetContextMock() };
+});
 
 import AlertsPage from "@/app/(dashboard)/alerts/page";
 
 describe("AlertsPage", () => {
   it("renders the live alerts feed for the demo fleet", async () => {
-    getDataSourceMock.mockReturnValue(
+    getFleetContextMock.mockResolvedValue({ status: "demo", fleetId: FLEET_ID, profile: {} });
+    getServerDataSourceMock.mockReturnValue(
       createFakeDataSource(
         buildTestSeed({
           profiles: [
@@ -30,5 +39,10 @@ describe("AlertsPage", () => {
     render(element);
     expect(screen.getByRole("heading", { name: "Live alerts" })).toBeInTheDocument();
     expect(screen.getByText(/Driver One/)).toBeInTheDocument();
+  });
+
+  it("never renders page content when the fleet context isn't resolved", async () => {
+    getFleetContextMock.mockResolvedValue({ status: "unauthenticated" });
+    await expect(AlertsPage()).rejects.toThrow(/Fleet context is not resolved/);
   });
 });
