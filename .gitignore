@@ -1,0 +1,21 @@
+node_modules/
+.next/
+dist/
+build/
+*.pyc
+__pycache__/
+.venv/
+coverage/
+.coverage
+htmlcov/
+.env
+.env.local
+.DS_Store
+.gradle/
+*.class
+target/
+.clarinet/
+
+# internal PRDs/spec docs — not shipped with the repo
+docs/
+

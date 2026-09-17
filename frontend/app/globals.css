@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* AlertGuard design tokens — Frontend PRD Section 3 */
+:root {
+  --ink: #0b0f1a;
+  --ink-2: #141b2e;
+  --ink-3: #1b2338;
+  --fog: #ede7db;
+  --mist: #8891a6;
+  --line: rgba(237, 231, 219, 0.14);
+  --accent: #f2a93b;
+  --brake: #c1443b;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--ink);
+  color: var(--fog);
+}
+
+/* Minimum touch target size, applied to any element opting in. */
+.touch-target {
+  min-width: 44px;
+  min-height: 44px;
+}
