@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "AlertGuard drowsy-driving detection: Python prototype of feature extraction, state machine, and evaluation harness"
 requires-python = ">=3.10"
 readme = "README.md"
+license = "LicenseRef-Proprietary"
 dependencies = [
     "numpy>=1.26",
 ]

@@ -4,6 +4,7 @@
   "description": "AlertGuard Supabase backend: migrations, RLS, and Edge Function logic.",
   "type": "module",
   "private": true,
+  "license": "UNLICENSED",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",

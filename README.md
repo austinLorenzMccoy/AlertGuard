@@ -110,5 +110,5 @@ No raw video ever leaves the device or touches the backend. No iOS build. No DeF
 
 ## License
 
-Proprietary — DataNerds Solutions. Not licensed for external use.
+Proprietary — DataNerds Solutions. Not licensed for external use. See [`LICENSE`](./LICENSE).
 
