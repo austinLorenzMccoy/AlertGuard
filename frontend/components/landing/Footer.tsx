@@ -1,11 +1,11 @@
-import { LogoMark } from "@/components/landing/icons";
+import { LogoMark } from "@/components/brand/LogoMark";
 
 export function Footer() {
   return (
     <footer className="flex flex-col gap-10 border-t border-line px-6 py-11 md:flex-row md:items-start md:justify-between md:px-16">
       <div className="flex flex-col gap-2.5">
         <div className="flex items-center gap-2">
-          <LogoMark className="h-[22px] w-[22px] text-accent" />
+          <LogoMark size={22} />
           <span className="font-display text-[17px] font-semibold text-fog">AlertGuard</span>
         </div>
         <p className="max-w-[280px] font-body text-[13px] text-mist">

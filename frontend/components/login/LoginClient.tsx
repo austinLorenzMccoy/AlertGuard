@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { LogoMark } from "@/components/brand/LogoMark";
 import { Button } from "@/components/ui/Button";
 import { getPostLoginRedirect } from "@/lib/logic/auth-redirect";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
@@ -54,7 +55,10 @@ function RealLoginClient() {
 
   return (
     <div className="flex w-full max-w-sm flex-col gap-4 rounded-card border border-line bg-ink-2 p-8">
-      <h1 className="font-display text-2xl text-fog">AlertGuard Fleet Dashboard</h1>
+      <div className="flex items-center gap-2.5">
+        <LogoMark size={28} priority />
+        <h1 className="font-display text-2xl text-fog">AlertGuard Fleet Dashboard</h1>
+      </div>
       <p className="text-sm text-mist">
         Sign in with your fleet Google account. Driver accounts are redirected to the
         mobile app download page.
@@ -76,7 +80,10 @@ function DemoLoginClient() {
 
   return (
     <div className="flex w-full max-w-sm flex-col gap-4 rounded-card border border-line bg-ink-2 p-8">
-      <h1 className="font-display text-2xl text-fog">AlertGuard Fleet Dashboard</h1>
+      <div className="flex items-center gap-2.5">
+        <LogoMark size={28} priority />
+        <h1 className="font-display text-2xl text-fog">AlertGuard Fleet Dashboard</h1>
+      </div>
       <p className="text-sm text-mist">
         Sign in with your fleet Google account. Driver accounts are redirected to the
         mobile app download page.

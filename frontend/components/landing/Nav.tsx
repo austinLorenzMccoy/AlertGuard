@@ -1,11 +1,11 @@
 import Link from "next/link";
-import { LogoMark } from "@/components/landing/icons";
+import { LogoMark } from "@/components/brand/LogoMark";
 
 export function Nav() {
   return (
     <nav className="flex h-[88px] items-center justify-between border-b border-line px-6 md:px-16">
       <Link href="/" className="flex items-center gap-2.5 text-fog">
-        <LogoMark className="h-7 w-7 text-accent" />
+        <LogoMark size={32} priority />
         <span className="font-display text-xl font-semibold tracking-tight">AlertGuard</span>
       </Link>
       <div className="hidden items-center gap-10 font-body text-[15px] text-mist md:flex">
