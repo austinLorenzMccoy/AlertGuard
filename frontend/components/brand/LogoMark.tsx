@@ -11,12 +11,17 @@ export interface LogoMarkProps {
   priority?: boolean;
 }
 
-/** The AlertGuard shield/eye mark, cropped from the brand logo. */
+/**
+ * The AlertGuard shield/eye mark, cropped from the brand logo. `alt=""`
+ * (decorative) because every call site pairs it with adjacent visible
+ * "AlertGuard" text — an alt text here would just duplicate that in the
+ * accessible name.
+ */
 export function LogoMark({ size = 32, className, priority = false }: LogoMarkProps) {
   return (
     <Image
       src="/brand/logo-mark.png"
-      alt="AlertGuard"
+      alt=""
       width={Math.round(size * ASPECT_RATIO)}
       height={size}
       className={className}
