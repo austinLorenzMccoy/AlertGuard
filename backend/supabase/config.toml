@@ -457,6 +457,12 @@ verify_jwt = true
 [functions.manage-user-role]
 verify_jwt = true
 
+# Powers the Settings page's user picker (list signed-up accounts a
+# fleet_manager/admin may promote). Same end-user-initiated-only rationale as
+# manage-user-role.
+[functions.list-promotable-users]
+verify_jwt = true
+
 # Experimental features may be deprecated any time
 [experimental]
 # Configures Postgres storage engine to use OrioleDB (S3)

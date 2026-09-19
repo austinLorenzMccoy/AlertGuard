@@ -62,8 +62,9 @@ backend/
 | `request-wallet-connect-challenge` | Issues a one-time nonce for the "connect external wallet" flow | `_shared/wallet-crypto.ts` |
 | `connect-external-wallet` | Verifies a signed challenge, replaces `profiles.wallet_address`, deletes the old custodial key | `_shared/wallet.ts`, `_shared/wallet-crypto.ts` |
 | `manage-user-role` | Promotes an already-signed-up user to `fleet_manager`/`admin` from the fleet dashboard's Settings page | `_shared/roles.ts` |
+| `list-promotable-users` | Lists signed-up accounts a caller may promote, for the Settings page's picker (replaces typing an email blind) | `_shared/roles.ts` |
 
-`_shared/auth.ts` is the caller-authorization gate shared by all twelve
+`_shared/auth.ts` is the caller-authorization gate shared by all thirteen
 (`authorizeCaller` for JWT-validated client calls, `isInternalCall` for the
 shared-secret internal-only calls — see "Auth model" below).
 
@@ -182,7 +183,7 @@ npm test          # vitest run
 npm run coverage  # vitest run --coverage
 ```
 
-**Result: 221 tests, all passing, across 11 spec files** (one per
+**Result: 229 tests, all passing, across 11 spec files** (one per
 `_shared/*.ts` module: `auth`, `verification`, `rewards`, `payout`,
 `notifications`, `redemptions`, `reconciliation`, `fleetReports`,
 `wallet-crypto`, `wallet`, `roles`).
@@ -481,6 +482,37 @@ there is no internal-call/shared-secret path for this function.
 - **HTTP status mapping** (`manage-user-role/index.ts`): 200 success; 403
   `forbidden`/`cannot_modify_own_role`; 404 `user_not_found`/
   `profile_not_ready`; 400 `invalid_request`/`fleet_id_required`.
+
+## List signed-up accounts to promote (`list-promotable-users`)
+
+Powers the Settings page's user picker: browse signed-up accounts instead of
+typing an email blind into `manage-user-role`. Same
+end-user-initiated-only shape as `manage-user-role` (caller's own JWT, no
+internal-call path).
+
+- **Pure logic**: `_shared/roles.ts` — `selectPromotableUsers` (pure scoping
+  decision: which of "every signed-up user" the caller may see, no DB access)
+  and `listPromotableUsers` (resolves the caller's own role, then applies the
+  scoping). Wiring: `supabase/functions/list-promotable-users/index.ts`.
+- **Scoping rules** (`selectPromotableUsers`), mirroring
+  `authorizeRoleChange`'s grant rules and
+  `fleet_managers_assign_driver_to_fleet`'s RLS policy so nobody is ever shown
+  a candidate they couldn't actually promote:
+  - Caller role `driver`, or no `profiles` row at all -> sees nobody
+    (`forbidden`).
+  - Caller role `admin` -> every other signed-up user, any role, any fleet.
+  - Caller role `fleet_manager` -> only `driver` rows that are unassigned
+    (`fleet_id is null`) or already in the caller's own fleet.
+  - The caller's own row is always excluded — this is a browse list, not a
+    self-service role changer (`manage-user-role` separately, unconditionally
+    rejects self-promotion regardless of what this endpoint shows).
+- **Where emails come from**: `profiles` has no `email` column — email only
+  lives in `auth.users`, which isn't exposed via PostgREST. Rather than add
+  another `SECURITY DEFINER` SQL function, `index.ts` uses the service-role
+  Admin API (`supabase.auth.admin.listUsers`) to fetch every user's email and
+  joins it with `profiles` by id in memory. Single page, `perPage: 1000` — no
+  pagination yet; revisit if a fleet's signed-up-user count ever approaches
+  that.
 
 ## Design decisions worth knowing about
 

@@ -156,8 +156,24 @@ that got replaced:
 ### Promote user to fleet_manager/admin
 
 Settings' "Manager accounts" panel (`components/settings/ManagerList.tsx`) lets
-a signed-in fleet_manager/admin promote an already-signed-up user by email,
+a signed-in fleet_manager/admin promote an already-signed-up user — either by
+browsing the "Signed-up accounts" picker or by typing an email directly —
 replacing "hand-run SQL in the Supabase SQL Editor" with a real in-app flow.
+
+- **The picker** (`listPromotableUsers` Server Action ->
+  `list-promotable-users` Edge Function) fetches on mount, scoped server-side
+  to what the caller may actually promote: an admin sees every other signed-up
+  user, a fleet_manager sees only unassigned drivers or drivers already in
+  their own fleet (see `backend/README.md`'s
+  "List signed-up accounts to promote" for the full scoping rules). Each row
+  has its own Promote button; an admin caller additionally gets a per-row role
+  select and (when granting fleet_manager) a Fleet ID input, mirroring the
+  manual form below it. A successful promotion removes the row from the
+  picker and, if the new role is `fleet_manager`, appends it to the "Manager
+  accounts" list above.
+- **The manual email form stays as a fallback** for anyone not yet reflected
+  in the picker (e.g. a just-signed-up account before a page refresh) —
+  unchanged from before.
 
 - **Never touches the Supabase service-role key.** `app/(dashboard)/settings/actions.ts`'s
   `promoteUser` Server Action (`"use server"`) gets the *caller's own*
@@ -232,7 +248,7 @@ npm run test:coverage # vitest run --coverage
 Stack: Vitest + `@testing-library/react` + `@testing-library/jest-dom` +
 `@testing-library/user-event`, jsdom environment, v8 coverage provider.
 
-**Current result: 340 tests, all passing, 100% coverage** (lines/branches/
+**Current result: 355 tests, all passing, 100% coverage** (lines/branches/
 functions/statements, `coverage.thresholds` in `vitest.config.ts` enforces this —
 `npm run test:coverage` fails the build if it regresses).
 
@@ -280,19 +296,24 @@ What's covered:
 - `app/(dashboard)/layout.tsx`: all five `FleetContext` status branches
   (demo/ok render children, unauthenticated/unauthorized_role redirect,
   no_fleet renders the "contact your admin" message).
-- `app/(dashboard)/settings/actions.ts`'s `promoteUser` Server Action: missing
-  `NEXT_PUBLIC_SUPABASE_URL`, no session/access token, a successful
-  `manage-user-role` response, every known error `reason`, an unrecognized
-  reason, an unparseable response body, and a thrown `fetch` — `lib/supabase-server.ts`
-  and `fetch` are both mocked, no real network call is made.
+- `app/(dashboard)/settings/actions.ts`'s `promoteUser` and `listPromotableUsers`
+  Server Actions: missing `NEXT_PUBLIC_SUPABASE_URL`, no session/access
+  token, a successful Edge Function response, every known error `reason`, an
+  unrecognized reason, an unparseable response body, a non-array `users`
+  field, and a thrown `fetch` — `lib/supabase-server.ts` and `fetch` are both
+  mocked, no real network call is made.
 - `components/settings/ManagerList.tsx`: demo mode unchanged (no role
-  selector/Fleet ID input, no Server Action call, local-state-only invite);
-  real mode's role selector (Admin option gated on the caller's own role),
-  the Fleet ID input's required-for-fleet_manager / optional-for-admin
-  labeling, the client-side `fleet_id_required` pre-check, the pending
-  "Sending..." state, and every `promoteUser` outcome (success for both
-  roles, `user_not_found`, `forbidden`, `cannot_modify_own_role`, and a
-  generic error).
+  selector/Fleet ID input, no Server Action call, local-state-only invite,
+  no picker); real mode's role selector (Admin option gated on the caller's
+  own role), the Fleet ID input's required-for-fleet_manager /
+  optional-for-admin labeling, the client-side `fleet_id_required`
+  pre-check, the pending "Sending..." state, and every `promoteUser` outcome
+  (success for both roles, `user_not_found`, `forbidden`,
+  `cannot_modify_own_role`, and a generic error) for the manual form; the
+  "Signed-up accounts" picker's loading/error/empty states, per-candidate
+  role select and Fleet ID input (admin caller) vs. single-click promote (fleet_manager
+  caller), a per-candidate promotion failure, and the post-unmount fetch
+  resolving without updating state.
 
 ### Coverage exclude list
 

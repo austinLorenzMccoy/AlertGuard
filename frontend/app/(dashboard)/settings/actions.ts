@@ -99,3 +99,56 @@ export async function promoteUser(input: PromoteUserInput): Promise<PromoteUserR
 
   return { status: "error", reason: "error" };
 }
+
+export interface PromotableUser {
+  id: string;
+  email: string;
+  fullName: string | null;
+  role: Role;
+  fleetId: string | null;
+}
+
+export type ListPromotableUsersResult =
+  | { status: "success"; users: PromotableUser[] }
+  | { status: "error"; reason: "forbidden" | "error" };
+
+/**
+ * Server Action backing the Settings page's user picker (real mode only —
+ * see `components/settings/ManagerList.tsx`). Same thin-relay shape as
+ * `promoteUser`: forwards the caller's own session token to the
+ * `list-promotable-users` Edge Function, which does its own JWT verification
+ * and role scoping — never touches the Supabase service-role key here.
+ */
+export async function listPromotableUsers(): Promise<ListPromotableUsersResult> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!supabaseUrl) {
+    return { status: "error", reason: "error" };
+  }
+
+  const supabase = createServerSupabaseClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session?.access_token) {
+    return { status: "error", reason: "forbidden" };
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${supabaseUrl}/functions/v1/list-promotable-users`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+  } catch {
+    return { status: "error", reason: "error" };
+  }
+
+  const body = await response.json().catch(() => null);
+
+  if (response.ok && body?.status === "success" && Array.isArray(body.users)) {
+    return { status: "success", users: body.users as PromotableUser[] };
+  }
+
+  return { status: "error", reason: body?.reason === "forbidden" ? "forbidden" : "error" };
+}

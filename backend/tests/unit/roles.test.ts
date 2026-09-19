@@ -2,11 +2,15 @@ import { describe, it, expect, vi } from "vitest";
 import {
   authorizeRoleChange,
   manageUserRole,
+  selectPromotableUsers,
+  listPromotableUsers,
   type CallerProfileRepo,
   type TargetUserResolver,
   type TargetProfileRepo,
   type RoleChangeAuditLogger,
   type ProfileRole,
+  type PromotableUser,
+  type AllUsersRepo,
 } from "../../supabase/functions/_shared/roles.ts";
 
 describe("authorizeRoleChange", () => {
@@ -322,5 +326,103 @@ describe("manageUserRole", () => {
     expect(result).toEqual({ status: "error", reason: "profile_not_ready" });
     expect(deps.targetProfiles.updateRoleAndFleet).not.toHaveBeenCalled();
     expect(deps.auditLogger.logRoleChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("selectPromotableUsers", () => {
+  const users: PromotableUser[] = [
+    { id: "caller-1", email: "caller@example.com", fullName: "Caller", role: "admin", fleetId: null },
+    { id: "driver-unassigned", email: "d1@example.com", fullName: "D1", role: "driver", fleetId: null },
+    { id: "driver-own-fleet", email: "d2@example.com", fullName: "D2", role: "driver", fleetId: "fleet-a" },
+    { id: "driver-other-fleet", email: "d3@example.com", fullName: "D3", role: "driver", fleetId: "fleet-b" },
+    { id: "manager-1", email: "m1@example.com", fullName: "M1", role: "fleet_manager", fleetId: "fleet-a" },
+    { id: "admin-2", email: "a2@example.com", fullName: "A2", role: "admin", fleetId: null },
+  ];
+
+  it("returns every other user for an admin caller, excluding the caller's own row", () => {
+    const result = selectPromotableUsers("caller-1", "admin", null, users);
+    expect(result.map((u) => u.id)).toEqual([
+      "driver-unassigned",
+      "driver-own-fleet",
+      "driver-other-fleet",
+      "manager-1",
+      "admin-2",
+    ]);
+  });
+
+  it("returns only unassigned or own-fleet drivers for a fleet_manager caller", () => {
+    const result = selectPromotableUsers("caller-1", "fleet_manager", "fleet-a", users);
+    expect(result.map((u) => u.id)).toEqual(["driver-unassigned", "driver-own-fleet"]);
+  });
+
+  it("excludes other fleets' drivers and non-driver roles for a fleet_manager caller", () => {
+    const result = selectPromotableUsers("caller-1", "fleet_manager", "fleet-a", users);
+    expect(result.some((u) => u.id === "driver-other-fleet")).toBe(false);
+    expect(result.some((u) => u.id === "manager-1")).toBe(false);
+    expect(result.some((u) => u.id === "admin-2")).toBe(false);
+  });
+
+  it("returns an empty list for a driver caller", () => {
+    expect(selectPromotableUsers("caller-1", "driver", null, users)).toEqual([]);
+  });
+
+  it("returns an empty list when the caller has no profile row at all", () => {
+    expect(selectPromotableUsers("caller-1", null, null, users)).toEqual([]);
+  });
+});
+
+describe("listPromotableUsers", () => {
+  function makeDeps(overrides: {
+    callerProfile?: { role: ProfileRole; fleet_id: string | null } | null;
+    allUsers?: PromotableUser[];
+  } = {}): { callerProfiles: CallerProfileRepo; allUsers: AllUsersRepo } {
+    return {
+      callerProfiles: {
+        findCallerProfile: vi.fn().mockResolvedValue(
+          overrides.callerProfile === undefined
+            ? { role: "admin", fleet_id: null }
+            : overrides.callerProfile
+        ),
+      },
+      allUsers: {
+        listAllUsers: vi.fn().mockResolvedValue(overrides.allUsers ?? []),
+      },
+    };
+  }
+
+  it("returns the scoped user list for an authorized caller", async () => {
+    const deps = makeDeps({
+      callerProfile: { role: "admin", fleet_id: null },
+      allUsers: [
+        { id: "caller-1", email: "caller@example.com", fullName: null, role: "admin", fleetId: null },
+        { id: "driver-1", email: "d1@example.com", fullName: null, role: "driver", fleetId: null },
+      ],
+    });
+
+    const result = await listPromotableUsers("caller-1", deps);
+
+    expect(result).toEqual({
+      status: "success",
+      users: [{ id: "driver-1", email: "d1@example.com", fullName: null, role: "driver", fleetId: null }],
+    });
+    expect(deps.allUsers.listAllUsers).toHaveBeenCalled();
+  });
+
+  it("returns forbidden and never fetches the full user list when the caller is a driver", async () => {
+    const deps = makeDeps({ callerProfile: { role: "driver", fleet_id: null } });
+
+    const result = await listPromotableUsers("caller-1", deps);
+
+    expect(result).toEqual({ status: "error", reason: "forbidden" });
+    expect(deps.allUsers.listAllUsers).not.toHaveBeenCalled();
+  });
+
+  it("returns forbidden when the caller has no profile row at all", async () => {
+    const deps = makeDeps({ callerProfile: null });
+
+    const result = await listPromotableUsers("caller-1", deps);
+
+    expect(result).toEqual({ status: "error", reason: "forbidden" });
+    expect(deps.allUsers.listAllUsers).not.toHaveBeenCalled();
   });
 });

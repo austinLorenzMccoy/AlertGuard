@@ -203,3 +203,90 @@ export async function manageUserRole(
 
   return { status: "success", targetId, role: input.role, fleetId: decision.fleetId };
 }
+
+// ---------------------------------------------------------------------------
+// listPromotableUsers — "who can I promote?" for the Settings page's user
+// picker (replaces blindly typing an email into the invite form).
+// ---------------------------------------------------------------------------
+
+export interface PromotableUser {
+  id: string;
+  email: string;
+  fullName: string | null;
+  role: ProfileRole;
+  fleetId: string | null;
+}
+
+/**
+ * Pure scoping decision, independent of any DB access: which of `allUsers`
+ * the caller is allowed to see/promote.
+ *   - `driver`, or no profile row at all -> sees nobody (caller isn't even
+ *     authorized to be on this screen).
+ *   - `admin` -> every other user (any role, any fleet) — admins may grant
+ *     fleet_manager or admin to anyone per `authorizeRoleChange`.
+ *   - `fleet_manager` -> only `driver` rows that are unassigned
+ *     (`fleetId === null`) or already in the caller's own fleet — mirrors
+ *     `authorizeRoleChange`'s fleet_manager branch, which can only ever grant
+ *     `fleet_manager` scoped to their own fleet, and
+ *     `fleet_managers_assign_driver_to_fleet`'s RLS policy, which only lets a
+ *     fleet_manager touch drivers already in their fleet or not yet assigned
+ *     anywhere.
+ * The caller's own row is always excluded (nothing here is ever a valid
+ * "promote yourself" target — see `manageUserRole`'s unconditional
+ * `cannot_modify_own_role` guard).
+ */
+export function selectPromotableUsers(
+  callerId: string,
+  callerRole: ProfileRole | null,
+  callerFleetId: string | null,
+  allUsers: PromotableUser[]
+): PromotableUser[] {
+  const others = allUsers.filter((u) => u.id !== callerId);
+
+  if (callerRole === "admin") {
+    return others;
+  }
+
+  if (callerRole === "fleet_manager") {
+    return others.filter(
+      (u) => u.role === "driver" && (u.fleetId === null || u.fleetId === callerFleetId)
+    );
+  }
+
+  return [];
+}
+
+export interface AllUsersRepo {
+  /** Every signed-up user with a `profiles` row, joined with their `auth.users` email. */
+  listAllUsers(): Promise<PromotableUser[]>;
+}
+
+export interface ListPromotableUsersDeps {
+  callerProfiles: CallerProfileRepo;
+  allUsers: AllUsersRepo;
+}
+
+export type ListPromotableUsersResult =
+  | { status: "success"; users: PromotableUser[] }
+  | { status: "error"; reason: "forbidden" };
+
+/**
+ * Orchestrates "who can this caller promote": resolves the caller's own role
+ * (same `forbidden`-for-driver-or-no-profile gate as `authorizeRoleChange`),
+ * then scopes the full user list down via `selectPromotableUsers`.
+ */
+export async function listPromotableUsers(
+  callerId: string,
+  deps: ListPromotableUsersDeps
+): Promise<ListPromotableUsersResult> {
+  const callerProfile = await deps.callerProfiles.findCallerProfile(callerId);
+  const callerRole = callerProfile?.role ?? null;
+
+  if (callerRole !== "admin" && callerRole !== "fleet_manager") {
+    return { status: "error", reason: "forbidden" };
+  }
+
+  const allUsers = await deps.allUsers.listAllUsers();
+  const users = selectPromotableUsers(callerId, callerRole, callerProfile?.fleet_id ?? null, allUsers);
+  return { status: "success", users };
+}
