@@ -18,6 +18,9 @@ export function Nav() {
         <a href="#rewards" className="transition-colors hover:text-fog">
           Rewards
         </a>
+        <Link href="/login" className="transition-colors hover:text-fog">
+          Log in
+        </Link>
         <Link
           href="/download"
           className="rounded-full bg-fog px-[22px] py-2.5 font-semibold text-ink transition-colors hover:bg-fog/90"

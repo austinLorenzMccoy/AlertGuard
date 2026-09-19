@@ -22,6 +22,7 @@ describe("RootPage", () => {
       expect(link).toHaveAttribute("href", "/download");
     }
     expect(screen.getByRole("link", { name: "Get the app" })).toHaveAttribute("href", "/download");
+    expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute("href", "/login");
     expect(screen.getByRole("link", { name: "For fleets & insurers" })).toHaveAttribute("href", "/login");
     expect(screen.getByRole("link", { name: "See the fleet dashboard" })).toHaveAttribute("href", "/login");
     expect(screen.getByRole("link", { name: "Talk to us" })).toHaveAttribute("href", "/login");
